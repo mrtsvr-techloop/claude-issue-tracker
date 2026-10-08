@@ -72,6 +72,19 @@ the project button leaves at once.
 - `/issues attach <path or owner/name>` shows another repository.
 - `/issues close` closes the pane.
 
+## Mod Signals
+
+The mod follows [Mod Signals](https://github.com/mrtsvr-techloop/mod-signals), a standard for mods
+to hear each other without knowing each other. It accepts `open`, `close` and `toggle`, and emits `opened`, `closed` and `notify`. Another mod, such as a
+dock of buttons, can open and close it with nothing added here.
+
+The standard travels in `hooks/mod-signals`, a `git subtree` of its repository: the files are
+committed here and are not edited here. A newer version is pulled with
+
+```
+git subtree pull --prefix hooks/mod-signals git@github.com:mrtsvr-techloop/mod-signals.git main --squash
+```
+
 ## Develop
 
 ```

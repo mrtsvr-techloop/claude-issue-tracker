@@ -447,6 +447,30 @@ test('an issue the prompt names joins the ones worked on; a number that is no is
   await ui.unmount()
 })
 
+test('the commands go through $.issues, the API any other mod calls: open, toggle, close', async ($, on) => {
+  const seen = machine(on)
+  const closed: unknown[] = []
+  const run = async (args: string) =>
+    (await $.command.run({ command: 'issues', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } })).text
+  on('ui.close', (_, e) => {
+    closed.push(e.id)
+
+    return { value: undefined }
+  })
+
+  // No project yet: nothing to open.
+  expect(await run('')).toBe('No project yet. Use "/issues attach <path or owner/name>".')
+  await attach($)
+  const opens = seen.opened.length
+
+  expect(await run('')).toBe('Issue pane opened.')
+  expect(seen.opened).toHaveLength(opens + 1)
+  // The fake surface keeps its pane listed, so a toggle closes: what is checked is that the close was asked.
+  await run('toggle')
+  expect(await run('close')).toBe('Issue pane closed.')
+  expect(closed).toEqual(['issues', 'issues'])
+})
+
 test('with no GitHub access on the machine nothing is attached and no pane opens', async ($, on) => {
   const seen = machine(on, false)
 

@@ -1,6 +1,6 @@
 {
   "name": "issue-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A pane beside the transcript with the GitHub issues of the project the session works in",
   "types": "./types/index.d.ts"
 }

@@ -72,7 +72,36 @@ export type Feed = {
 
 export type Access = 'unknown' | 'granted' | 'none'
 
+/** A signal of Mod Signals 0.1, as the mod writes it under `signal` for every other mod to hear. */
+export type IssuesSignal = {
+  v: 1
+  kind: 'event' | 'command' | 'announce'
+  name: string
+  to?: string
+  data?: Record<string, unknown>
+  /** What kind of signal this is, for whoever picks signals by kind: `['info', 'completion']`. */
+  tags?: string[]
+  id: string
+}
+
+/**
+ * What any other mod calls on `$.issues` to drive the pane with no command typed.
+ * Each answers whether the pane is open once the call is done.
+ */
+export type Issues = {
+  /** Opens the pane on the attached project; false when there is no project to show. */
+  open: () => Promise<boolean>
+  close: () => Promise<boolean>
+  /** Closes the pane when it is open, opens it otherwise. */
+  toggle: () => Promise<boolean>
+  isOpen: () => Promise<boolean>
+}
+
 declare module 'claude-code' {
+  interface EngineInterface {
+    issues: Issues
+  }
+
   interface PluginState {
     'issue-tracker': {
       repo: Repo | null
@@ -91,6 +120,8 @@ declare module 'claude-code' {
       editing: number | null
       /** The issue the panel shows in full in place of the list, if any. */
       viewing: number | null
+      /** The mod's signals: `announce`, `opened`, `closed`, `notify`. */
+      signal: IssuesSignal | null
     }
   }
 }

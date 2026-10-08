@@ -21,6 +21,8 @@ import {
 } from './model'
 import type { Ports } from './ports'
 import { branchOf, dirOf, locate, locateChildren } from './project'
+import { ROLL_CALL_MS, readSignal, signalOf } from './mod-signals/kit/signals'
+import type { Announce, SignalKind } from './mod-signals/kit/signals'
 
 const PANE = 'issues'
 const COMMAND = 'issues'
@@ -101,12 +103,55 @@ const pinsKey = (one: Repo): string => `pins:${one.host}/${slugOf(one)}`.toLower
 const asNumbers = (value: unknown): number[] =>
   Array.isArray(value) ? value.filter((one): one is number => typeof one === 'number') : []
 
-const openPane = async ($: EngineInterface): Promise<void> => {
-  await $.ui.open({ id: PANE, title: 'Issues', columns: PANE_COLUMNS })
-}
-
 const isPaneOpen = async ($: EngineInterface): Promise<boolean> =>
   (await $.ui.panes()).some(pane => pane.id === PANE)
+
+/** The mod's name as the engine gives it: the `to` of the commands it obeys. */
+const MOD = 'issue-tracker'
+const SELF: Announce = { title: 'Issues', accepts: ['open', 'close', 'toggle'], emits: ['opened', 'closed', 'notify'] }
+
+const signal = atom({ plugin: 'issue-tracker', key: 'signal' } as const, null)
+const sent = { count: 0, answeredAt: 0 }
+
+/** One signal to whoever listens; a mod above that refuses the write stops nothing here. */
+const emit = async (
+  $: EngineInterface,
+  kind: SignalKind,
+  name: string,
+  data?: Record<string, unknown>,
+  tags?: string[],
+): Promise<void> => {
+  sent.count += 1
+
+  try {
+    await update($, signal, () => signalOf(kind, name, sent.count, Date.now(), { ...(data === undefined ? {} : { data }), ...(tags === undefined ? {} : { tags }) }))
+  } catch {
+    // The mod goes on without the signal.
+  }
+}
+
+/** Opens the pane, and says so where it was closed. */
+const openPane = async ($: EngineInterface): Promise<void> => {
+  const wasOpen = await isPaneOpen($)
+  await $.ui.open({ id: PANE, title: 'Issues', columns: PANE_COLUMNS })
+
+  if (!wasOpen) {
+    await emit($, 'event', 'opened')
+  }
+}
+
+/** Closes the pane, and says so where it was open; answers whether it is open still. */
+const closePane = async ($: EngineInterface): Promise<boolean> => {
+  const wasOpen = await isPaneOpen($)
+  await $.ui.close({ id: PANE })
+  const isOpen = await isPaneOpen($)
+
+  if (wasOpen && !isOpen) {
+    await emit($, 'event', 'closed')
+  }
+
+  return isOpen
+}
 
 /** One load at a time: a second ask while one runs is dropped, the next tick asks again. */
 let isBusy = false
@@ -282,13 +327,67 @@ const changeStatus = async ($: EngineInterface, issue: Issue, choice: Choice): P
   }
 }
 
+const hasProject = async ($: EngineInterface): Promise<boolean> =>
+  (await read($, repo)) !== null || (await read($, candidates)).length > 0
+
+/** Opens the pane on fresh issues; false, and nothing opened, with no project to show. */
+const show = async ($: EngineInterface): Promise<boolean> => {
+  if (!(await hasProject($))) {
+    return false
+  }
+
+  await load($, 'refresh')
+  await openPane($)
+
+  return true
+}
+
+/** A command another mod sent: what the person could do with `/issues`, and no more. */
+const obey = async ($: EngineInterface, name: string): Promise<void> => {
+  if (name === 'close') {
+    await $.issues.close()
+
+    return
+  }
+
+  if (name !== 'open' && name !== 'toggle') {
+    return
+  }
+
+  const wasOpen = await $.issues.isOpen()
+  const isOpen = name === 'open' ? await $.issues.open() : await $.issues.toggle()
+
+  if (!wasOpen && !isOpen) {
+    await emit($, 'event', 'notify', { text: 'No project yet. Use /issues attach <path or owner/name>.' }, ['warning'])
+  }
+}
+
 export const register: Register = on => {
+  // Mod Signals: every signal, whoever writes it. The write goes on first and
+  // untouched; the mod answers a roll-call and obeys the commands sent to it.
+  on('state.set', { key: 'signal' }, async ($, e, next) => {
+    const done = await next(e)
+    const heard = done.value?.isSet === true ? readSignal(e.value) : null
+
+    if (heard?.kind === 'event' && heard.name === 'roll-call' && Date.now() - sent.answeredAt >= ROLL_CALL_MS) {
+      sent.answeredAt = Date.now()
+      await emit($, 'announce', 'announce', SELF)
+    }
+
+    if (heard?.kind === 'command' && heard.to === MOD) {
+      await obey($, heard.name)
+    }
+
+    return done
+  }).catch((_, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: COMMAND,
-      description: 'Show the project issues pane; "attach <path or owner/name>", "refresh" or "close"',
-      argumentHint: '[attach <path|owner/name> | refresh | close]',
+      description: 'Show the project issues pane; "attach <path or owner/name>", "toggle" or "close"',
+      argumentHint: '[attach <path|owner/name> | toggle | close]',
     })
+    await emit($, 'announce', 'announce', SELF)
 
     try {
       const cwd = await $.session.cwd()
@@ -318,10 +417,15 @@ export const register: Register = on => {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
     const target = rest.join(' ')
 
+    // The command is one caller of the mod's API among others.
     if (verb === 'close') {
-      await $.ui.close({ id: PANE })
+      await $.issues.close()
 
       return { text: 'Issue pane closed.' }
+    }
+
+    if (verb === 'toggle') {
+      return { text: (await $.issues.toggle()) ? 'Issue pane opened.' : 'Issue pane closed.' }
     }
 
     if (verb === 'attach' && target.length > 0) {
@@ -337,14 +441,24 @@ export const register: Register = on => {
         : { text: `This machine has no GitHub access to the issues of ${slugOf(found)}.` }
     }
 
-    if ((await read($, repo)) === null && (await read($, candidates)).length === 0) {
-      return { text: 'No project yet. Use "/issues attach <path or owner/name>".' }
-    }
+    return { text: (await $.issues.open()) ? 'Issue pane opened.' : 'No project yet. Use "/issues attach <path or owner/name>".' }
+  })
 
-    await load($, 'refresh')
-    await openPane($)
+  // The mod's API: `$.issues` for any other mod, the pane driven with no command typed.
+  on('engine.create', async ($, e, next) => ({
+    ...(await next(e)),
+    // Each is answered by its hook below; alone, a method says the pane is closed.
+    issues: { open: async () => false, close: async () => false, toggle: async () => false, isOpen: async () => false },
+  }))
 
-    return { text: 'Issue pane opened.' }
+  on('issues.isOpen', async $ => ({ value: await isPaneOpen($) }))
+
+  on('issues.open', async $ => ({ value: await show($) }))
+
+  on('issues.close', async $ => ({ value: await closePane($) }))
+
+  on('issues.toggle', async $ => {
+    return { value: (await isPaneOpen($)) ? await closePane($) : await show($) }
   })
 
   on('prompt.submit', async ($, e, next) => {
