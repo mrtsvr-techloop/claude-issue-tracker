@@ -1,0 +1,5 @@
+{
+  "name": "claude-issue-tracker",
+  "owner": { "name": "mrtsvr-techloop" },
+  "plugins": [{ "name": "issue-tracker", "source": "./" }]
+}
